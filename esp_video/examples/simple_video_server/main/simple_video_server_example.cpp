@@ -4,6 +4,8 @@
  * SPDX-License-Identifier: ESPRESSIF MIT
  */
 
+/* Standard C headers and ESP-IDF headers must be wrapped */
+extern "C" {
 #include "cJSON.h"
 #include "esp_check.h"
 #include "esp_err.h"
@@ -26,6 +28,12 @@
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/param.h>
+}
+
+// #include "dl_layer_base.hpp"
+#include "dl_model_base.hpp"
+// #include "hand_detect.hpp"
+// #include "hand_gesture_recognition.hpp"
 
 #define EXAMPLE_CAMERA_VIDEO_BUFFER_NUMBER                                     \
   CONFIG_EXAMPLE_CAMERA_VIDEO_BUFFER_NUMBER
@@ -233,7 +241,7 @@ static char *get_cameras_json(web_cam_t *web_cam) {
       int step_quality = 1;
       int default_quality = EXAMPLE_JPEG_ENC_QUALITY;
       if (web_cam->video[i].pixel_format == V4L2_PIX_FMT_JPEG) {
-        struct v4l2_query_ext_ctrl qctrl = {0};
+        struct v4l2_query_ext_ctrl qctrl = {};
 
         qctrl.id = V4L2_CID_JPEG_COMPRESSION_QUALITY;
         if (ioctl(web_cam->video[i].fd, VIDIOC_QUERY_EXT_CTRL, &qctrl) == 0) {
@@ -266,9 +274,9 @@ static esp_err_t set_camera_jpeg_quality(web_cam_video_t *video, int quality) {
   int quality_reset = quality;
 
   if (video->pixel_format == V4L2_PIX_FMT_JPEG) {
-    struct v4l2_ext_controls controls = {0};
+    struct v4l2_ext_controls controls = {};
     struct v4l2_ext_control control[1];
-    struct v4l2_query_ext_ctrl qctrl = {0};
+    struct v4l2_query_ext_ctrl qctrl = {};
 
     qctrl.id = V4L2_CID_JPEG_COMPRESSION_QUALITY;
     if (ioctl(video->fd, VIDIOC_QUERY_EXT_CTRL, &qctrl) == 0) {
@@ -333,71 +341,146 @@ static esp_err_t camera_info_handler(httpd_req_t *req) {
   return ret;
 }
 
-static esp_err_t camera_settings_handler(httpd_req_t *req) {
-  esp_err_t ret;
-  char *content;
-  web_cam_t *web_cam = (web_cam_t *)req->user_ctx;
+// static esp_err_t camera_settings_handler(httpd_req_t *req) {
+//   esp_err_t ret;
+//   char *content;
+//   web_cam_t *web_cam = (web_cam_t *)req->user_ctx;
 
-  content = (char *)calloc(1, req->content_len + 1);
-  ESP_RETURN_ON_FALSE(content, ESP_ERR_NO_MEM, TAG,
-                      "failed to allocate memory");
+//   content = (char *)calloc(1, req->content_len + 1);
+//   ESP_RETURN_ON_FALSE(content, ESP_ERR_NO_MEM, TAG,
+//                       "failed to allocate memory");
 
-  ESP_GOTO_ON_FALSE(httpd_req_recv(req, content, req->content_len) > 0,
-                    ESP_FAIL, fail0, TAG, "failed to recv content");
-  ESP_LOGD(TAG, "content: %s", content);
+//   ESP_GOTO_ON_FALSE(httpd_req_recv(req, content, req->content_len) > 0,
+//                     ESP_FAIL, fail0, TAG, "failed to recv content");
+//   ESP_LOGD(TAG, "content: %s", content);
 
-  cJSON *json_root = cJSON_Parse(content);
-  free(content);
-  content = NULL;
+//   cJSON *json_root = cJSON_Parse(content);
+//   free(content);
+//   content = NULL;
+//   ESP_GOTO_ON_FALSE(json_root, ESP_FAIL, fail0, TAG, "failed to parse JSON");
+
+//   cJSON *json_index = cJSON_GetObjectItem(json_root, "index");
+//   ESP_GOTO_ON_FALSE(json_index && cJSON_IsNumber(json_index),
+//                     ESP_ERR_INVALID_ARG, fail1, TAG,
+//                     "missing or invalid index field");
+//   int index = json_index->valueint;
+//   ESP_GOTO_ON_FALSE(index >= 0 && index < web_cam->video_count &&
+//                         is_valid_web_cam(&web_cam->video[index]),
+//                     ESP_ERR_INVALID_ARG, fail1, TAG, "invalid index");
+
+//   cJSON *json_image_format = cJSON_GetObjectItem(json_root, "image_format");
+//   ESP_GOTO_ON_FALSE(json_image_format && cJSON_IsNumber(json_image_format),
+//                     ESP_ERR_INVALID_ARG, fail1, TAG,
+//                     "missing or invalid image_format field");
+//   int image_format = json_image_format->valueint;
+
+//   cJSON *json_jpeg_quality = cJSON_GetObjectItem(json_root, "jpeg_quality");
+//   ESP_GOTO_ON_FALSE(json_jpeg_quality && cJSON_IsNumber(json_jpeg_quality),
+//                     ESP_ERR_INVALID_ARG, fail1, TAG,
+//                     "missing or invalid jpeg_quality field");
+//   int jpeg_quality = json_jpeg_quality->valueint;
+
+//   ESP_LOGI(TAG,
+//            "JSON parse success - index:%d, image_format:%d, jpeg_quality:%d",
+//            index, image_format, jpeg_quality);
+//   cJSON_Delete(json_root);
+//   json_root = NULL;
+
+//   ESP_GOTO_ON_ERROR(
+//       set_camera_jpeg_quality(&web_cam->video[index], jpeg_quality), fail1,
+//       TAG, "failed to set camera jpeg quality");
+
+//   httpd_resp_sendstr(req, "OK");
+//   return ESP_OK;
+
+// fail1:
+//   if (json_root) {
+//     cJSON_Delete(json_root);
+//   }
+// fail0:
+//   if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
+//     httpd_resp_send_408(req);
+//   } else {
+//     httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON format");
+//   }
+//   if (content) {
+//     free(content);
+//   }
+//   return ret;
+// }
+
+esp_err_t camera_settings_handler(httpd_req_t *req) {
+  esp_err_t ret = ESP_OK;
+  web_cam_t *wc =
+      (web_cam_t *)req->user_ctx; // Add this to retrieve wc from user_ctx
+  char *content = NULL;
+  size_t content_len = req->content_len;
+  int recv_len = 0; // Declare at top, init to 0 (fixes jump cross)
+  int index = 0;
+  int image_format = 0; // Parsed but unused; keep for logging/compatibility
+  int jpeg_quality = 0;
+  cJSON *json_root = NULL;
+  cJSON *json_index = NULL;
+  cJSON *json_image_format = NULL;
+  cJSON *json_jpeg_quality = NULL;
+
+  content = (char *)malloc(content_len + 1);
+  ESP_GOTO_ON_FALSE(content, ESP_ERR_NO_MEM, fail0, TAG,
+                    "failed to alloc content");
+
+  recv_len =
+      httpd_req_recv(req, content, content_len); // Assign after malloc check
+  content[recv_len] = '\0';
+  ESP_GOTO_ON_FALSE(recv_len == (int)content_len, ESP_FAIL, fail0, TAG,
+                    "failed to recv content"); // Cast for type safety
+
+  json_root = cJSON_Parse(content);
   ESP_GOTO_ON_FALSE(json_root, ESP_FAIL, fail0, TAG, "failed to parse JSON");
 
-  cJSON *json_index = cJSON_GetObjectItem(json_root, "index");
-  ESP_GOTO_ON_FALSE(json_index && cJSON_IsNumber(json_index),
-                    ESP_ERR_INVALID_ARG, fail1, TAG,
-                    "missing or invalid index field");
-  int index = json_index->valueint;
-  ESP_GOTO_ON_FALSE(index >= 0 && index < web_cam->video_count &&
-                        is_valid_web_cam(&web_cam->video[index]),
-                    ESP_ERR_INVALID_ARG, fail1, TAG, "invalid index");
+  json_index = cJSON_GetObjectItem(json_root, "index");
+  ESP_GOTO_ON_FALSE(json_index, ESP_ERR_INVALID_ARG, fail1, TAG,
+                    "index not found");
+  ESP_GOTO_ON_FALSE(cJSON_IsNumber(json_index), ESP_ERR_INVALID_ARG, fail1, TAG,
+                    "index is not number");
 
-  cJSON *json_image_format = cJSON_GetObjectItem(json_root, "image_format");
-  ESP_GOTO_ON_FALSE(json_image_format && cJSON_IsNumber(json_image_format),
-                    ESP_ERR_INVALID_ARG, fail1, TAG,
-                    "missing or invalid image_format field");
-  int image_format = json_image_format->valueint;
+  index = json_index->valueint;
+  ESP_GOTO_ON_FALSE(index >= 0 && index < wc->video_count, ESP_ERR_INVALID_ARG,
+                    fail1, TAG,
+                    "invalid index"); // Fix: video_count (not config_count)
+  ESP_GOTO_ON_FALSE(is_valid_web_cam(&wc->video[index]), ESP_ERR_INVALID_ARG,
+                    fail1, TAG, "invalid web cam"); // Add: from original code
 
-  cJSON *json_jpeg_quality = cJSON_GetObjectItem(json_root, "jpeg_quality");
-  ESP_GOTO_ON_FALSE(json_jpeg_quality && cJSON_IsNumber(json_jpeg_quality),
-                    ESP_ERR_INVALID_ARG, fail1, TAG,
-                    "missing or invalid jpeg_quality field");
-  int jpeg_quality = json_jpeg_quality->valueint;
+  json_image_format = cJSON_GetObjectItem(json_root, "image_format");
+  if (json_image_format) {
+    ESP_GOTO_ON_FALSE(cJSON_IsNumber(json_image_format), ESP_ERR_INVALID_ARG,
+                      fail1, TAG, "image_format is not number");
+    image_format = json_image_format->valueint;
+    // Remove invalid check: ESP_GOTO_ON_FALSE(image_format >= 0 && image_format
+    // < wc->config_count, ...);  // Illogical/buggy Remove:
+    // wc->video[index].image_format = image_format;  // No such field Note:
+    // image_format is parsed but unused (as in original); could add logic if
+    // more formats supported
+  }
 
-  ESP_LOGI(TAG,
-           "JSON parse success - index:%d, image_format:%d, jpeg_quality:%d",
-           index, image_format, jpeg_quality);
-  cJSON_Delete(json_root);
-  json_root = NULL;
+  json_jpeg_quality = cJSON_GetObjectItem(json_root, "jpeg_quality");
+  if (json_jpeg_quality) {
+    ESP_GOTO_ON_FALSE(cJSON_IsNumber(json_jpeg_quality), ESP_ERR_INVALID_ARG,
+                      fail1, TAG, "jpeg_quality is not number");
+    jpeg_quality = json_jpeg_quality->valueint;
+    ESP_GOTO_ON_FALSE(jpeg_quality >= 0 && jpeg_quality <= 100,
+                      ESP_ERR_INVALID_ARG, fail1, TAG, "invalid jpeg_quality");
+    set_camera_jpeg_quality(&wc->video[index], jpeg_quality);
+  }
 
-  ESP_GOTO_ON_ERROR(
-      set_camera_jpeg_quality(&web_cam->video[index], jpeg_quality), fail1, TAG,
-      "failed to set camera jpeg quality");
-
-  httpd_resp_sendstr(req, "OK");
-  return ESP_OK;
+  httpd_resp_set_status(req, "200 OK");
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_sendstr(req, "{\"status\":\"ok\"}");
 
 fail1:
-  if (json_root) {
-    cJSON_Delete(json_root);
-  }
+  cJSON_Delete(json_root);
+
 fail0:
-  if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
-    httpd_resp_send_408(req);
-  } else {
-    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON format");
-  }
-  if (content) {
-    free(content);
-  }
+  free(content);
   return ret;
 }
 
@@ -643,8 +726,9 @@ static esp_err_t init_web_cam_video(web_cam_video_t *video,
     ESP_GOTO_ON_ERROR(ioctl(fd, VIDIOC_QUERYBUF, &buf), fail0, TAG,
                       "failed to query vbuf from %s", config->dev_name);
 
-    video->buffer[i] = mmap(NULL, buf.length, PROT_READ | PROT_WRITE,
-                            MAP_SHARED, fd, buf.m.offset);
+    video->buffer[i] =
+        static_cast<uint8_t *>(mmap(NULL, buf.length, PROT_READ | PROT_WRITE,
+                                    MAP_SHARED, fd, buf.m.offset));
     ESP_GOTO_ON_FALSE(video->buffer[i] != MAP_FAILED, ESP_ERR_NO_MEM, fail0,
                       TAG, "failed to mmap buffer");
     video->buffer_size = buf.length;
@@ -663,7 +747,7 @@ static esp_err_t init_web_cam_video(web_cam_video_t *video,
     ESP_GOTO_ON_ERROR(set_camera_jpeg_quality(video, EXAMPLE_JPEG_ENC_QUALITY),
                       fail0, TAG, "failed to set jpeg quality");
   } else {
-    example_encoder_config_t encoder_config = {0};
+    example_encoder_config_t encoder_config = {};
 
     encoder_config.width = video->width;
     encoder_config.height = video->height;
@@ -728,7 +812,8 @@ static esp_err_t new_web_cam(const web_cam_video_config_t *config,
   esp_err_t ret = ESP_FAIL;
   int type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 
-  wc = calloc(1, sizeof(web_cam_t) + config_count * sizeof(web_cam_video_t));
+  wc = static_cast<web_cam_t *>(
+      calloc(1, sizeof(web_cam_t) + config_count * sizeof(web_cam_video_t)));
   ESP_RETURN_ON_FALSE(wc, ESP_ERR_NO_MEM, TAG, "failed to alloc web cam");
   wc->video_count = config_count;
 
@@ -885,7 +970,7 @@ static void initialise_mdns(void) {
                        sizeof(serviceTxtData) / sizeof(serviceTxtData[0])));
 }
 
-void app_main(void) {
+extern "C" void app_main(void) {
 #include "esp_log.h"
 #include "sdkconfig.h"
 
@@ -934,26 +1019,31 @@ void app_main(void) {
 #if EXAMPLE_ENABLE_MIPI_CSI_CAM_SENSOR
     {
         .dev_name = ESP_VIDEO_MIPI_CSI_DEVICE_NAME,
+        .buffer_count = EXAMPLE_CAMERA_VIDEO_BUFFER_NUMBER,
     },
 #endif /* EXAMPLE_ENABLE_MIPI_CSI_CAM_SENSOR */
 #if EXAMPLE_ENABLE_DVP_CAM_SENSOR
     {
         .dev_name = ESP_VIDEO_DVP_DEVICE_NAME,
+        .buffer_count = EXAMPLE_CAMERA_VIDEO_BUFFER_NUMBER,
     },
 #endif /* EXAMPLE_ENABLE_DVP_CAM_SENSOR */
 #if EXAMPLE_ENABLE_SPI_CAM_0_SENSOR
     {
         .dev_name = ESP_VIDEO_SPI_DEVICE_NAME,
+        .buffer_count = EXAMPLE_CAMERA_VIDEO_BUFFER_NUMBER,
     },
 #endif /* EXAMPLE_ENABLE_SPI_CAM_0_SENSOR */
 #if EXAMPLE_ENABLE_SPI_CAM_1_SENSOR
     {
         .dev_name = ESP_VIDEO_SPI_DEVICE_1_NAME,
+        .buffer_count = EXAMPLE_CAMERA_VIDEO_BUFFER_NUMBER,
     },
 #endif /* EXAMPLE_ENABLE_SPI_CAM_1_SENSOR */
 #if EXAMPLE_ENABLE_USB_UVC_CAM_SENSOR
     {
         .dev_name = ESP_VIDEO_USB_UVC_DEVICE_NAME(0),
+        .buffer_count = EXAMPLE_CAMERA_VIDEO_BUFFER_NUMBER,
     },
 #endif /* EXAMPLE_ENABLE_USB_UVC_CAM_SENSOR */
   };
