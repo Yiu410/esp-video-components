@@ -8,3 +8,5 @@ set(html_files "../frontend/gzipped/index.html.gz"
 idf_component_register(SRCS "${srcs}"
                        PRIV_INCLUDE_DIRS .
                        EMBED_TXTFILES ${html_files})
+
+target_add_binary_data(${COMPONENT_LIB} "espdet_pico_224_224_hand.espdl" TEXT)

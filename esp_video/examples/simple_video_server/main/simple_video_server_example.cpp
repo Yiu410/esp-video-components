@@ -64,6 +64,15 @@ extern const uint8_t
     assets_index_css_gz_start[] asm("_binary_index_css_gz_start");
 extern const uint8_t assets_index_css_gz_end[] asm("_binary_index_css_gz_end");
 
+// --- AI Model Binary Declarations ---
+extern const uint8_t espdet_pico_224_224_hand_espdl_start[] asm(
+    "_binary_espdet_pico_224_224_hand_espdl_start");
+extern const uint8_t espdet_pico_224_224_hand_espdl_end[] asm(
+    "_binary_espdet_pico_224_224_hand_espdl_end");
+
+// Global pointer for our detector
+static dl::Model *hand_detect_model = nullptr;
+
 /**
  * @brief Web cam control structure
  */
@@ -454,7 +463,7 @@ esp_err_t camera_settings_handler(httpd_req_t *req) {
   if (json_image_format) {
     ESP_GOTO_ON_FALSE(cJSON_IsNumber(json_image_format), ESP_ERR_INVALID_ARG,
                       fail1, TAG, "image_format is not number");
-    image_format = json_image_format->valueint;
+    // image_format = json_image_format->valueint;
     // Remove invalid check: ESP_GOTO_ON_FALSE(image_format >= 0 && image_format
     // < wc->config_count, ...);  // Illogical/buggy Remove:
     // wc->video[index].image_format = image_format;  // No such field Note:
@@ -1051,6 +1060,20 @@ extern "C" void app_main(void) {
   int config_count = sizeof(config) / sizeof(config[0]);
 
   assert(config_count > 0);
+
+  // --- Initialize AI Model ---
+  ESP_LOGI(TAG, "Loading Hand Detection Model from Flash...");
+  hand_detect_model =
+      new dl::Model((const char *)espdet_pico_224_224_hand_espdl_start,
+                    fbs::MODEL_LOCATION_IN_FLASH_RODATA);
+
+  if (hand_detect_model != nullptr) {
+    ESP_LOGI(TAG, "Hand Detection Model loaded successfully!");
+  } else {
+    ESP_LOGE(TAG, "Failed to load Hand Detection Model.");
+  }
+  // ---------------------------
+
   ESP_ERROR_CHECK(start_cam_web_server(config, config_count));
 
   ESP_LOGI(TAG, "Camera web server starts");
