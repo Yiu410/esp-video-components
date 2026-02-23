@@ -30,10 +30,9 @@ extern "C" {
 #include <sys/param.h>
 }
 
-// #include "dl_layer_base.hpp"
 #include "dl_model_base.hpp"
-// #include "hand_detect.hpp"
-// #include "hand_gesture_recognition.hpp"
+#include "hand_detect.hpp"
+#include "hand_gesture_recognition.hpp"
 
 #define EXAMPLE_CAMERA_VIDEO_BUFFER_NUMBER                                     \
   CONFIG_EXAMPLE_CAMERA_VIDEO_BUFFER_NUMBER
@@ -48,8 +47,10 @@ extern "C" {
 static const char *STREAM_CONTENT_TYPE =
     "multipart/x-mixed-replace;boundary=" EXAMPLE_PART_BOUNDARY;
 static const char *STREAM_BOUNDARY = "\r\n--" EXAMPLE_PART_BOUNDARY "\r\n";
-static const char *STREAM_PART = "Content-Type: image/jpeg\r\nContent-Length: "
-                                 "%u\r\nX-Timestamp: %d.%06d\r\n\r\n";
+
+static const char *STREAM_PART =
+    "Content-Type: image/jpeg\r\nContent-Length: %u\r\nX-Timestamp: "
+    "%d.%06d\r\nX-AI-Result: %s\r\n\r\n";
 
 extern const uint8_t index_html_gz_start[] asm("_binary_index_html_gz_start");
 extern const uint8_t index_html_gz_end[] asm("_binary_index_html_gz_end");
@@ -71,7 +72,7 @@ extern const uint8_t espdet_pico_224_224_hand_espdl_end[] asm(
     "_binary_espdet_pico_224_224_hand_espdl_end");
 
 // Global pointer for our detector
-static dl::Model *hand_detect_model = nullptr;
+static HandDetect *hand_detector = nullptr;
 
 /**
  * @brief Web cam control structure
@@ -350,74 +351,6 @@ static esp_err_t camera_info_handler(httpd_req_t *req) {
   return ret;
 }
 
-// static esp_err_t camera_settings_handler(httpd_req_t *req) {
-//   esp_err_t ret;
-//   char *content;
-//   web_cam_t *web_cam = (web_cam_t *)req->user_ctx;
-
-//   content = (char *)calloc(1, req->content_len + 1);
-//   ESP_RETURN_ON_FALSE(content, ESP_ERR_NO_MEM, TAG,
-//                       "failed to allocate memory");
-
-//   ESP_GOTO_ON_FALSE(httpd_req_recv(req, content, req->content_len) > 0,
-//                     ESP_FAIL, fail0, TAG, "failed to recv content");
-//   ESP_LOGD(TAG, "content: %s", content);
-
-//   cJSON *json_root = cJSON_Parse(content);
-//   free(content);
-//   content = NULL;
-//   ESP_GOTO_ON_FALSE(json_root, ESP_FAIL, fail0, TAG, "failed to parse JSON");
-
-//   cJSON *json_index = cJSON_GetObjectItem(json_root, "index");
-//   ESP_GOTO_ON_FALSE(json_index && cJSON_IsNumber(json_index),
-//                     ESP_ERR_INVALID_ARG, fail1, TAG,
-//                     "missing or invalid index field");
-//   int index = json_index->valueint;
-//   ESP_GOTO_ON_FALSE(index >= 0 && index < web_cam->video_count &&
-//                         is_valid_web_cam(&web_cam->video[index]),
-//                     ESP_ERR_INVALID_ARG, fail1, TAG, "invalid index");
-
-//   cJSON *json_image_format = cJSON_GetObjectItem(json_root, "image_format");
-//   ESP_GOTO_ON_FALSE(json_image_format && cJSON_IsNumber(json_image_format),
-//                     ESP_ERR_INVALID_ARG, fail1, TAG,
-//                     "missing or invalid image_format field");
-//   int image_format = json_image_format->valueint;
-
-//   cJSON *json_jpeg_quality = cJSON_GetObjectItem(json_root, "jpeg_quality");
-//   ESP_GOTO_ON_FALSE(json_jpeg_quality && cJSON_IsNumber(json_jpeg_quality),
-//                     ESP_ERR_INVALID_ARG, fail1, TAG,
-//                     "missing or invalid jpeg_quality field");
-//   int jpeg_quality = json_jpeg_quality->valueint;
-
-//   ESP_LOGI(TAG,
-//            "JSON parse success - index:%d, image_format:%d, jpeg_quality:%d",
-//            index, image_format, jpeg_quality);
-//   cJSON_Delete(json_root);
-//   json_root = NULL;
-
-//   ESP_GOTO_ON_ERROR(
-//       set_camera_jpeg_quality(&web_cam->video[index], jpeg_quality), fail1,
-//       TAG, "failed to set camera jpeg quality");
-
-//   httpd_resp_sendstr(req, "OK");
-//   return ESP_OK;
-
-// fail1:
-//   if (json_root) {
-//     cJSON_Delete(json_root);
-//   }
-// fail0:
-//   if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
-//     httpd_resp_send_408(req);
-//   } else {
-//     httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON format");
-//   }
-//   if (content) {
-//     free(content);
-//   }
-//   return ret;
-// }
-
 esp_err_t camera_settings_handler(httpd_req_t *req) {
   esp_err_t ret = ESP_OK;
   web_cam_t *wc =
@@ -426,7 +359,7 @@ esp_err_t camera_settings_handler(httpd_req_t *req) {
   size_t content_len = req->content_len;
   int recv_len = 0; // Declare at top, init to 0 (fixes jump cross)
   int index = 0;
-  int image_format = 0; // Parsed but unused; keep for logging/compatibility
+  // int image_format = 0; // Parsed but unused; keep for logging/compatibility
   int jpeg_quality = 0;
   cJSON *json_root = NULL;
   cJSON *json_index = NULL;
@@ -534,9 +467,10 @@ static esp_err_t image_stream_handler(httpd_req_t *req) {
   esp_err_t ret;
   struct v4l2_buffer buf;
   char http_string[128];
-  bool locked = false;
   web_cam_video_t *video = (web_cam_video_t *)req->user_ctx;
+  bool locked = false; // declared once, visible to fail0:
 
+  // Stream headers (sent once)
   ESP_RETURN_ON_FALSE(snprintf(http_string, sizeof(http_string), "%" PRIu32,
                                video->frame_rate) > 0,
                       ESP_FAIL, TAG, "failed to format framerate buffer");
@@ -552,29 +486,60 @@ static esp_err_t image_stream_handler(httpd_req_t *req) {
   while (1) {
     int hlen;
     struct timespec ts;
-    uint32_t jpeg_encoded_size;
+    uint32_t jpeg_encoded_size = 0;
+    char ai_result_json[256];
+    memset(ai_result_json, 0, sizeof(ai_result_json));
 
-    locked = false;
+    locked = false; // reset every frame
 
+    // --- Get new frame ---
     memset(&buf, 0, sizeof(buf));
     buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     buf.memory = V4L2_MEMORY_MMAP;
     ESP_RETURN_ON_ERROR(ioctl(video->fd, VIDIOC_DQBUF, &buf), TAG,
                         "failed to receive video frame");
+
     if (!(buf.flags & V4L2_BUF_FLAG_DONE)) {
       ESP_RETURN_ON_ERROR(ioctl(video->fd, VIDIOC_QBUF, &buf), TAG,
-                          "failed to queue video frame");
+                          "failed to queue invalid frame");
       continue;
     }
 
-    ESP_GOTO_ON_ERROR(
-        httpd_resp_send_chunk(req, STREAM_BOUNDARY, strlen(STREAM_BOUNDARY)),
-        fail0, TAG, "failed to send boundary");
+    // ESP_LOGI(TAG, "Check 1");
+    // --- AI inference + JPEG encode (only RGB565) ---
+    if (video->pixel_format != V4L2_PIX_FMT_JPEG && hand_detector != nullptr) {
 
-    if (video->pixel_format == V4L2_PIX_FMT_JPEG) {
-      video->jpeg_out_buf = video->buffer[buf.index];
-      jpeg_encoded_size = buf.bytesused;
-    } else {
+      dl::image::img_t img;
+      img.data = video->buffer[buf.index];
+      img.width = video->width;
+      img.height = video->height;
+
+      // Dynamically match the AI format to the V4L2 camera format
+      if (video->pixel_format == V4L2_PIX_FMT_RGB565) {
+        img.pix_type = dl::image::DL_IMAGE_PIX_TYPE_RGB565;
+      } else {
+        // Fallback to RGB888
+        img.pix_type = dl::image::DL_IMAGE_PIX_TYPE_RGB888;
+      }
+
+      auto &detect_results = hand_detector->run(img);
+
+      if (!detect_results.empty()) {
+        ESP_LOGI(TAG, "Hand detected! Confidence: %f",
+                 detect_results.front().score);
+        auto box = detect_results.front().box;
+        // Use snprintf and check for overflow
+        snprintf(ai_result_json, sizeof(ai_result_json),
+                 "{\"detected\":true,\"x\":%d,\"y\":%d,\"w\":%d,\"h\":%d,"
+                 "\"score\":%.2f}",
+                 (int)box[0], (int)box[1], (int)(box[2] - box[0]),
+                 (int)(box[3] - box[1]), detect_results.front().score);
+      } else {
+        ESP_LOGI(TAG, "No hand detected");
+        strcpy(ai_result_json, "{\"detected\":false}");
+      }
+
+      // Encode to JPEG
       ESP_GOTO_ON_FALSE(xSemaphoreTake(video->sem, portMAX_DELAY) == pdPASS,
                         ESP_FAIL, fail0, TAG, "failed to take semaphore");
       locked = true;
@@ -584,20 +549,36 @@ static esp_err_t image_stream_handler(httpd_req_t *req) {
                             video->buffer_size, video->jpeg_out_buf,
                             video->jpeg_out_size, &jpeg_encoded_size),
                         fail0, TAG, "failed to encode video frame");
+    } else {
+      // Raw JPEG camera
+      video->jpeg_out_buf = video->buffer[buf.index];
+      jpeg_encoded_size = buf.bytesused;
     }
 
+    // --- Send one proper MJPEG frame ---
     ESP_GOTO_ON_ERROR(clock_gettime(CLOCK_MONOTONIC, &ts), fail0, TAG,
                       "failed to get time");
+
+    // Boundary
+    ESP_GOTO_ON_ERROR(
+        httpd_resp_send_chunk(req, STREAM_BOUNDARY, strlen(STREAM_BOUNDARY)),
+        fail0, TAG, "failed to send boundary");
+
+    // Header with X-AI-Result
     ESP_GOTO_ON_FALSE(
         (hlen = snprintf(http_string, sizeof(http_string), STREAM_PART,
-                         jpeg_encoded_size, ts.tv_sec, ts.tv_nsec)) > 0,
+                         jpeg_encoded_size, (int)ts.tv_sec,
+                         (int)(ts.tv_nsec / 1000), ai_result_json)) > 0,
         ESP_FAIL, fail0, TAG, "failed to format part buffer");
-    ESP_GOTO_ON_ERROR(httpd_resp_send_chunk(req, http_string, hlen), fail0, TAG,
-                      "failed to send boundary");
 
+    ESP_GOTO_ON_ERROR(httpd_resp_send_chunk(req, http_string, hlen), fail0, TAG,
+                      "failed to send part header");
+
+    // JPEG data
     ESP_GOTO_ON_ERROR(httpd_resp_send_chunk(req, (char *)video->jpeg_out_buf,
                                             jpeg_encoded_size),
                       fail0, TAG, "failed to send jpeg");
+
     if (locked) {
       xSemaphoreGive(video->sem);
       locked = false;
@@ -915,7 +896,8 @@ static esp_err_t http_server_init(web_cam_t *web_cam) {
                                      .handler = camera_settings_handler,
                                      .user_ctx = (void *)web_cam};
 
-  config.stack_size = 1024 * 6;
+  // config.stack_size = 1024 * 12;
+  config.stack_size = 10240;
   ESP_LOGI(TAG, "Starting stream server on port: '%d'", config.server_port);
   if (httpd_start(&stream_httpd, &config) == ESP_OK) {
     /* Register API handlers (more specific URIs) */
@@ -1063,11 +1045,13 @@ extern "C" void app_main(void) {
 
   // --- Initialize AI Model ---
   ESP_LOGI(TAG, "Loading Hand Detection Model from Flash...");
-  hand_detect_model =
-      new dl::Model((const char *)espdet_pico_224_224_hand_espdl_start,
-                    fbs::MODEL_LOCATION_IN_FLASH_RODATA);
+  // hand_detect_model =
+  // new dl::Model((const char *)espdet_pico_224_224_hand_espdl_start,
+  //               fbs::MODEL_LOCATION_IN_FLASH_RODATA);
+  hand_detector = new HandDetect();
+  hand_detector->set_score_thr(0.5);
 
-  if (hand_detect_model != nullptr) {
+  if (hand_detector != nullptr) {
     ESP_LOGI(TAG, "Hand Detection Model loaded successfully!");
   } else {
     ESP_LOGE(TAG, "Failed to load Hand Detection Model.");
