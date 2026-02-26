@@ -71,8 +71,14 @@ extern const uint8_t espdet_pico_224_224_hand_espdl_start[] asm(
 extern const uint8_t espdet_pico_224_224_hand_espdl_end[] asm(
     "_binary_espdet_pico_224_224_hand_espdl_end");
 
+extern const uint8_t hand_gesture_recognition_espdl_start[] asm(
+    "_binary_hand_gesture_recognition_espdl_start");
+extern const uint8_t hand_gesture_recognition_espdl_end[] asm(
+    "_binary_hand_gesture_recognition_espdl_end");
+
 // Global pointer for our detector
 static HandDetect *hand_detector = nullptr;
+static HandGestureRecognizer *gesture_recognizer = nullptr;
 
 /**
  * @brief Web cam control structure
@@ -507,7 +513,8 @@ static esp_err_t image_stream_handler(httpd_req_t *req) {
 
     // ESP_LOGI(TAG, "Check 1");
     // --- AI inference + JPEG encode (only RGB565) ---
-    if (video->pixel_format != V4L2_PIX_FMT_JPEG && hand_detector != nullptr) {
+    if (video->pixel_format != V4L2_PIX_FMT_JPEG && hand_detector != nullptr &&
+        gesture_recognizer != nullptr) {
 
       dl::image::img_t img;
       img.data = video->buffer[buf.index];
@@ -525,17 +532,29 @@ static esp_err_t image_stream_handler(httpd_req_t *req) {
       auto &detect_results = hand_detector->run(img);
 
       if (!detect_results.empty()) {
-        ESP_LOGI(TAG, "Hand detected! Confidence: %f",
-                 detect_results.front().score);
+        // ESP_LOGI(TAG, "Hand detected! Confidence: %f",
+        //          detect_results.front().score);
+
+        auto gesture_result =
+            gesture_recognizer->recognize(img, detect_results);
+
+        const dl::cls::result_t best = gesture_result.front();
+        // ESP_LOGI(TAG, "Hand detected! Gesture ID: %s, score: %f",
+        // best.cat_name,
+        //          best.score);
+        ESP_LOGI(TAG, "Gesture recognized: %s (score=%.4f)",
+                 best.cat_name ? best.cat_name : "unknown", best.score);
+
         auto box = detect_results.front().box;
+
         // Use snprintf and check for overflow
         snprintf(ai_result_json, sizeof(ai_result_json),
                  "{\"detected\":true,\"x\":%d,\"y\":%d,\"w\":%d,\"h\":%d,"
-                 "\"score\":%.2f}",
+                 "\"gesture_id\":\"%s\"}",
                  (int)box[0], (int)box[1], (int)(box[2] - box[0]),
-                 (int)(box[3] - box[1]), detect_results.front().score);
+                 (int)(box[3] - box[1]), best.cat_name);
       } else {
-        ESP_LOGI(TAG, "No hand detected");
+        // ESP_LOGI(TAG, "No hand detected");
         strcpy(ai_result_json, "{\"detected\":false}");
       }
 
@@ -1051,10 +1070,12 @@ extern "C" void app_main(void) {
   hand_detector = new HandDetect();
   hand_detector->set_score_thr(0.5);
 
-  if (hand_detector != nullptr) {
-    ESP_LOGI(TAG, "Hand Detection Model loaded successfully!");
+  gesture_recognizer = new HandGestureRecognizer();
+
+  if (hand_detector != nullptr && gesture_recognizer != nullptr) {
+    ESP_LOGI(TAG, "Hand Gesture Recognition Model loaded successfully!");
   } else {
-    ESP_LOGE(TAG, "Failed to load Hand Detection Model.");
+    ESP_LOGE(TAG, "Failed to load Hand Gesture Recognition Model.");
   }
   // ---------------------------
 
