@@ -71,3 +71,4 @@ managed_components
 
 # IDF component manager built files
 */dist/
+/esp_video/build
