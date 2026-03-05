@@ -33,6 +33,8 @@ extern "C" {
 #include "dl_model_base.hpp"
 #include "hand_detect.hpp"
 #include "hand_gesture_recognition.hpp"
+#include "human_face_detect.hpp"
+#include "human_face_recognition.hpp"
 
 #define EXAMPLE_CAMERA_VIDEO_BUFFER_NUMBER                                     \
   CONFIG_EXAMPLE_CAMERA_VIDEO_BUFFER_NUMBER
@@ -76,9 +78,16 @@ extern const uint8_t hand_gesture_recognition_espdl_start[] asm(
 extern const uint8_t hand_gesture_recognition_espdl_end[] asm(
     "_binary_hand_gesture_recognition_espdl_end");
 
+extern const uint8_t human_face_detect_mnp_s8_v1_espdl_start[] asm(
+    "_binary_human_face_detect_mnp_s8_v1_espdl_start");
+extern const uint8_t human_face_feat_mbf_s8_v1_espdl_start[] asm(
+    "_binary_human_face_feat_mbf_s8_v1_espdl_start");
+
 // Global pointer for our detector
 static HandDetect *hand_detector = nullptr;
 static HandGestureRecognizer *gesture_recognizer = nullptr;
+static HumanFaceDetect *face_detector = nullptr;
+static HumanFaceRecognizer *face_recognizer = nullptr;
 
 /**
  * @brief Web cam control structure
@@ -556,6 +565,35 @@ static esp_err_t image_stream_handler(httpd_req_t *req) {
       } else {
         // ESP_LOGI(TAG, "No hand detected");
         strcpy(ai_result_json, "{\"detected\":false}");
+      }
+
+      // 1. Run Face Detection
+      auto &face_results = face_detector->run(img);
+
+      if (!face_results.empty()) {
+        ESP_LOGI(TAG, "Face detected! Confidence: %f",
+                 face_results.front().score);
+
+        // 2. Run Face Recognition
+        // This extracts facial landmarks and compares them to the database
+        // auto recognition_results =
+        //     face_recognizer->recognize(img, face_results);
+
+        // for (int i = 0; i < recognition_results.size(); ++i) {
+        //   int face_id = recognition_results[i].id; // -1 if unknown
+
+        //   if (face_id >= 0) {
+        //     ESP_LOGI(TAG, "Matched Face ID: %d", face_id);
+        //   } else {
+        //     ESP_LOGI(TAG, "Unknown Face Detected");
+        //   }
+
+        // Add to your JSON output
+        // auto &box = face_results[i].box;
+        // snprintf(ai_result_json, sizeof(ai_result_json),
+        //          "{\"type\":\"face\",\"id\":%d,\"x\":%d,\"y\":%d}", face_id,
+        //          (int)box[0], (int)box[1]);
+        // }
       }
 
       // Encode to JPEG
@@ -1078,7 +1116,16 @@ extern "C" void app_main(void) {
     ESP_LOGE(TAG, "Failed to load Hand Gesture Recognition Model.");
   }
   // ---------------------------
+  face_detector = new HumanFaceDetect();
+  // face_recognizer = new HumanFaceRecognizer();
 
+  if (face_detector != nullptr) {
+    ESP_LOGI(TAG, "Face Detection Model loaded successfully!");
+  } else {
+    ESP_LOGE(TAG, "Failed to load Face Detection Model.");
+  }
+
+  // ---------------------------
   ESP_ERROR_CHECK(start_cam_web_server(config, config_count));
 
   ESP_LOGI(TAG, "Camera web server starts");
