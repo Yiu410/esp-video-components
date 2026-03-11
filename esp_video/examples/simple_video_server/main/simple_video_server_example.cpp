@@ -571,8 +571,13 @@ static esp_err_t image_stream_handler(httpd_req_t *req) {
       auto &face_results = face_detector->run(img);
 
       if (!face_results.empty()) {
-        ESP_LOGI(TAG, "Face detected! Confidence: %f",
-                 face_results.front().score);
+        auto first_face = face_results.front();
+        ESP_LOGI(TAG,
+                 "Face detected! Confidence: %f| BBox: [Left: %d, Top: %d, "
+                 "Right: %d, Bottom: %d]",
+                 first_face.score, (int)first_face.box[0],
+                 (int)first_face.box[1], (int)first_face.box[2],
+                 (int)first_face.box[3]);
 
         // 2. Run Face Recognition
         // This extracts facial landmarks and compares them to the database
