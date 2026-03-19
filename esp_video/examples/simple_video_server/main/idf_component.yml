@@ -17,7 +17,6 @@ dependencies:
     - if: idf_version >= 6.0
   espressif/esp-dl: '^3.2.4'
   espressif/esp_video: '>=1.0.0'
-  espressif/esp-nn: '*'
   espressif/hand_detect: '^0.1.0'
   espressif/hand_gesture_recognition: '^0.1.0'
   espressif/human_face_detect: '^0.3.0'

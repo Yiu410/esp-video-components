@@ -12,6 +12,7 @@ extern "C" {
 #include "esp_event.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
+#include "esp_spiffs.h"
 #include "esp_timer.h"
 #include "example_video_common.h"
 #include "freertos/FreeRTOS.h"
@@ -478,6 +479,21 @@ static esp_err_t static_file_handler(httpd_req_t *req) {
   return ESP_FAIL;
 }
 
+static esp_err_t init_spiffs(void) {
+  ESP_LOGI("STORAGE", "Initializing SPIFFS");
+  esp_vfs_spiffs_conf_t conf = {.base_path = "/spiffs",
+                                .partition_label = "storage",
+                                .max_files = 5,
+                                .format_if_mount_failed = true};
+  esp_err_t ret = esp_vfs_spiffs_register(&conf);
+  if (ret != ESP_OK) {
+    ESP_LOGE("STORAGE", "Failed to mount or format SPIFFS (%s)",
+             esp_err_to_name(ret));
+    return ret;
+  }
+  return ESP_OK;
+}
+
 static esp_err_t image_stream_handler(httpd_req_t *req) {
   esp_err_t ret;
   struct v4l2_buffer buf;
@@ -578,6 +594,48 @@ static esp_err_t image_stream_handler(httpd_req_t *req) {
                  first_face.score, (int)first_face.box[0],
                  (int)first_face.box[1], (int)first_face.box[2],
                  (int)first_face.box[3]);
+
+        // 1. Check if the database is empty using the correct function
+        if (face_recognizer->get_num_feats() == 0) {
+          ESP_LOGI(TAG, "Database is empty. Enrolling first face...");
+          // Enroll the face using its keypoints (landmarks), save as ID 1,
+          // write to flash (true)
+          face_recognizer->enroll(img, face_results);
+          ESP_LOGI(TAG, "Face successfully enrolled as ID: 1");
+        }
+
+        // auto recognize_result = face_recognizer->recognize(img,
+        // face_results);
+
+        // 2. Run recognition
+        // Depending on your component version, recognize might take the
+        // keypoint rather than the whole face_results list
+        auto recognize_result = face_recognizer->recognize(img, face_results);
+
+        // 3. SAFELY extract the recognition result
+        // Only run this if the recognition result actually contains data!
+        if (recognize_result.empty()) {
+          ESP_LOGI(TAG, "No recognition results returned");
+        } else if (recognize_result.front().id != -1) {
+          // If recognize() returns a single result struct (not a vector)
+          ESP_LOGI(TAG, "Matched Face ID: %d (Similarity: %f)",
+                   recognize_result.front().id,
+                   recognize_result.front().similarity);
+        } else {
+          ESP_LOGI(TAG, "Unknown Face Detected");
+        }
+
+        // auto first_recognition = recognize_result.front();
+
+        // int face_id =
+        //     first_recognition.id; // Will be -1 if it's an unknown face
+
+        // if (face_id > 0) {
+        //   ESP_LOGI(TAG, "Matched Face ID: %d (Similarity: %f)", face_id,
+        //            first_recognition.similarity);
+        // } else {
+        //   ESP_LOGI(TAG, "Unknown Face Detected");
+        // }
 
         // 2. Run Face Recognition
         // This extracts facial landmarks and compares them to the database
@@ -1105,11 +1163,10 @@ extern "C" void app_main(void) {
 
   assert(config_count > 0);
 
+  init_spiffs();
+
   // --- Initialize AI Model ---
   ESP_LOGI(TAG, "Loading Hand Detection Model from Flash...");
-  // hand_detect_model =
-  // new dl::Model((const char *)espdet_pico_224_224_hand_espdl_start,
-  //               fbs::MODEL_LOCATION_IN_FLASH_RODATA);
   hand_detector = new HandDetect();
   hand_detector->set_score_thr(0.5);
 
@@ -1122,12 +1179,13 @@ extern "C" void app_main(void) {
   }
   // ---------------------------
   face_detector = new HumanFaceDetect();
-  // face_recognizer = new HumanFaceRecognizer();
+  face_recognizer = new HumanFaceRecognizer("/spiffs/face.db",
+                                            HumanFaceFeat::MBF_S8_V1, false);
 
-  if (face_detector != nullptr) {
-    ESP_LOGI(TAG, "Face Detection Model loaded successfully!");
+  if (face_detector != nullptr && face_recognizer != nullptr) {
+    ESP_LOGI(TAG, "Face Recognition Model loaded successfully!");
   } else {
-    ESP_LOGE(TAG, "Failed to load Face Detection Model.");
+    ESP_LOGE(TAG, "Failed to load Face Recognition Model.");
   }
 
   // ---------------------------
