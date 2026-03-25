@@ -573,11 +573,11 @@ static esp_err_t image_stream_handler(httpd_req_t *req) {
         auto box = detect_results.front().box;
 
         // Use snprintf and check for overflow
-        snprintf(ai_result_json, sizeof(ai_result_json),
-                 "{\"detected\":true,\"x\":%d,\"y\":%d,\"w\":%d,\"h\":%d,"
-                 "\"gesture_id\":\"%s\"}",
-                 (int)box[0], (int)box[1], (int)(box[2] - box[0]),
-                 (int)(box[3] - box[1]), best.cat_name);
+        // snprintf(ai_result_json, sizeof(ai_result_json),
+        //          "{\"detected\":true,\"x\":%d,\"y\":%d,\"w\":%d,\"h\":%d,"
+        //          "\"gesture_id\":\"%s\"}",
+        //          (int)box[0], (int)box[1], (int)(box[2] - box[0]),
+        //          (int)(box[3] - box[1]), best.cat_name);
       } else {
         // ESP_LOGI(TAG, "No hand detected");
         strcpy(ai_result_json, "{\"detected\":false}");
@@ -595,34 +595,18 @@ static esp_err_t image_stream_handler(httpd_req_t *req) {
                  (int)first_face.box[1], (int)first_face.box[2],
                  (int)first_face.box[3]);
 
-        // 1. Check if the database is empty using the correct function
-        if (face_recognizer->get_num_feats() == 0) {
-          ESP_LOGI(TAG, "Database is empty. Enrolling first face...");
-          // Enroll the face using its keypoints (landmarks), save as ID 1,
-          // write to flash (true)
-          face_recognizer->enroll(img, face_results);
-          ESP_LOGI(TAG, "Face successfully enrolled as ID: 1");
-        }
-
-        // auto recognize_result = face_recognizer->recognize(img,
-        // face_results);
-
         // 2. Run recognition
-        // Depending on your component version, recognize might take the
-        // keypoint rather than the whole face_results list
         auto recognize_result = face_recognizer->recognize(img, face_results);
 
         // 3. SAFELY extract the recognition result
-        // Only run this if the recognition result actually contains data!
         if (recognize_result.empty()) {
           ESP_LOGI(TAG, "No recognition results returned");
+          face_recognizer->enroll(img, face_results);
         } else if (recognize_result.front().id != -1) {
           // If recognize() returns a single result struct (not a vector)
           ESP_LOGI(TAG, "Matched Face ID: %d (Similarity: %f)",
                    recognize_result.front().id,
                    recognize_result.front().similarity);
-        } else {
-          ESP_LOGI(TAG, "Unknown Face Detected");
         }
 
         // auto first_recognition = recognize_result.front();
