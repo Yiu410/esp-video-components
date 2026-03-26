@@ -84,6 +84,10 @@ extern const uint8_t human_face_detect_mnp_s8_v1_espdl_start[] asm(
 extern const uint8_t human_face_feat_mbf_s8_v1_espdl_start[] asm(
     "_binary_human_face_feat_mbf_s8_v1_espdl_start");
 
+extern const uint8_t user1_rgb_start[] asm("_binary_yiu_rgb_start");
+extern const uint8_t user2_rgb_start[] asm("_binary_jerry_rgb_start");
+extern const uint8_t user3_rgb_start[] asm("_binary_thomas_rgb_start");
+
 // Global pointer for our detector
 static HandDetect *hand_detector = nullptr;
 static HandGestureRecognizer *gesture_recognizer = nullptr;
@@ -585,6 +589,7 @@ static esp_err_t image_stream_handler(httpd_req_t *req) {
 
       // 1. Run Face Detection
       auto &face_results = face_detector->run(img);
+      // ESP_LOGI(TAG, "img size: %dx%d", img.width, img.height);
 
       if (!face_results.empty()) {
         auto first_face = face_results.front();
@@ -599,14 +604,15 @@ static esp_err_t image_stream_handler(httpd_req_t *req) {
         auto recognize_result = face_recognizer->recognize(img, face_results);
 
         // 3. SAFELY extract the recognition result
-        if (recognize_result.empty()) {
-          ESP_LOGI(TAG, "No recognition results returned");
-          face_recognizer->enroll(img, face_results);
-        } else if (recognize_result.front().id != -1) {
-          // If recognize() returns a single result struct (not a vector)
-          ESP_LOGI(TAG, "Matched Face ID: %d (Similarity: %f)",
-                   recognize_result.front().id,
-                   recognize_result.front().similarity);
+        if (!recognize_result.empty()) {
+          if (recognize_result.front().id != -1) {
+            // If recognize() returns a single result struct (not a vector)
+            ESP_LOGI(TAG, "Matched Face ID: %d (Similarity: %f)",
+                     recognize_result.front().id,
+                     recognize_result.front().similarity);
+          }
+        } else {
+          ESP_LOGI(TAG, "Unknown Face Detected");
         }
 
         // auto first_recognition = recognize_result.front();
@@ -638,8 +644,8 @@ static esp_err_t image_stream_handler(httpd_req_t *req) {
         // Add to your JSON output
         // auto &box = face_results[i].box;
         // snprintf(ai_result_json, sizeof(ai_result_json),
-        //          "{\"type\":\"face\",\"id\":%d,\"x\":%d,\"y\":%d}", face_id,
-        //          (int)box[0], (int)box[1]);
+        //          "{\"type\":\"face\",\"id\":%d,\"x\":%d,\"y\":%d}",
+        //          face_id, (int)box[0], (int)box[1]);
         // }
       }
 
@@ -1093,8 +1099,8 @@ extern "C" void app_main(void) {
   }
 
   /*For camera devices that require the host to provide XCLK, the video_init()
-  must be called immediately after the device is restarted, otherwise the camera
-  device may not be able to start due to the lack of the main clock.*/
+  must be called immediately after the device is restarted, otherwise the
+  camera device may not be able to start due to the lack of the main clock.*/
   ESP_ERROR_CHECK(example_video_init());
 
   ESP_ERROR_CHECK(esp_netif_init());
@@ -1166,8 +1172,64 @@ extern "C" void app_main(void) {
   face_recognizer = new HumanFaceRecognizer("/spiffs/face.db",
                                             HumanFaceFeat::MBF_S8_V1, false);
 
+  // Define this right before your face_recognizer initialization
+  struct PreEnrollData {
+    const uint8_t *image_data;
+    int id;
+    const char *name; // Optional: Just to make your logs easier to read
+  };
+
   if (face_detector != nullptr && face_recognizer != nullptr) {
     ESP_LOGI(TAG, "Face Recognition Model loaded successfully!");
+    // --- First-Boot Pre-Enrollment Logic ---
+    face_recognizer->clear_all_feats();
+    if (face_recognizer->get_num_feats() == 0) {
+      ESP_LOGI(TAG,
+               "Database is empty. Running batch offline pre-enrollment...");
+
+      // 1. Create an array of all the people you want to enroll
+      PreEnrollData users_to_enroll[] = {{user1_rgb_start, 1, "Yiu"},
+                                         {user2_rgb_start, 2, "Jerry"},
+                                         {user3_rgb_start, 3, "Thomas"}};
+
+      // Calculate how many people are in the array
+      int num_users = sizeof(users_to_enroll) / sizeof(users_to_enroll[0]);
+
+      // 2. Loop through each person and enroll them
+      for (int i = 0; i < num_users; i++) {
+        ESP_LOGI(TAG, "Attempting to enroll ID: %d (%s)...",
+                 users_to_enroll[i].id, users_to_enroll[i].name);
+
+        dl::image::img_t pre_img;
+        pre_img.data = (void *)users_to_enroll[i].image_data;
+        // pre_img.width = 1920;
+        // pre_img.height = 1080;
+        pre_img.width = 240;
+        pre_img.height = 240;
+        pre_img.pix_type = dl::image::DL_IMAGE_PIX_TYPE_RGB888;
+
+        auto &pre_face_results = face_detector->run(pre_img);
+
+        if (!pre_face_results.empty()) {
+          // Enroll and save to SPIFFS
+          face_recognizer->enroll(pre_img, pre_face_results);
+          ESP_LOGI(TAG, "SUCCESS! Enrolled %s as ID %d.",
+                   users_to_enroll[i].name, users_to_enroll[i].id);
+        } else {
+          ESP_LOGE(TAG, "FAILED: No face detected in image for %s.",
+                   users_to_enroll[i].name);
+        }
+      }
+
+      ESP_LOGI(TAG, "Batch pre-enrollment complete. Total faces in DB: %d",
+               face_recognizer->get_num_feats());
+    } else {
+      ESP_LOGI(TAG,
+               "Database already contains %d faces. Skipping batch "
+               "pre-enrollment.",
+               face_recognizer->get_num_feats());
+    }
+    // ---------------------------------------
   } else {
     ESP_LOGE(TAG, "Failed to load Face Recognition Model.");
   }
