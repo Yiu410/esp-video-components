@@ -878,14 +878,14 @@ static esp_err_t start_cam_web_server(const web_cam_video_config_t *config,
   //     1, sizeof(web_cam_t) + config_count * sizeof(web_cam_video_t));
   s_web_cam = web_cam;
 
-  ESP_GOTO_ON_ERROR(http_server_init(web_cam), fail0, TAG,
-                    "Failed to init http server");
+  // ESP_GOTO_ON_ERROR(http_server_init(web_cam), fail0, TAG,
+  //                   "Failed to init http server");
 
   return ESP_OK;
 
-fail0:
-  free_web_cam(web_cam);
-  return ret;
+  // fail0:
+  //   free_web_cam(web_cam);
+  //   return ret;
 }
 
 static void initialise_mdns(void) {
