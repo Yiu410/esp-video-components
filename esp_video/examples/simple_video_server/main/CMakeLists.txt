@@ -1,4 +1,7 @@
-set(srcs "simple_video_server_example.cpp")
+set(srcs 
+    "simple_video_server_example.cpp"
+    "ai_processor.cpp"
+)
 set(html_files "../frontend/gzipped/index.html.gz"
                "../frontend/gzipped/loading.jpg.gz"
                "../frontend/gzipped/favicon.ico.gz"

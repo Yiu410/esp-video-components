@@ -31,6 +31,8 @@ extern "C" {
 #include <sys/param.h>
 }
 
+#include "ai_processor.hpp"
+#include "camera_types.h"
 #include "dl_model_base.hpp"
 #include "hand_detect.hpp"
 #include "hand_gesture_recognition.hpp"
@@ -84,46 +86,13 @@ extern const uint8_t human_face_detect_mnp_s8_v1_espdl_start[] asm(
 extern const uint8_t human_face_feat_mbf_s8_v1_espdl_start[] asm(
     "_binary_human_face_feat_mbf_s8_v1_espdl_start");
 
-extern const uint8_t user1_rgb_start[] asm("_binary_yiu_rgb_start");
-extern const uint8_t user2_rgb_start[] asm("_binary_jerry_rgb_start");
-extern const uint8_t user3_rgb_start[] asm("_binary_thomas_rgb_start");
+static web_cam_t *s_web_cam = NULL;
 
-// Global pointer for our detector
-static HandDetect *hand_detector = nullptr;
-static HandGestureRecognizer *gesture_recognizer = nullptr;
-static HumanFaceDetect *face_detector = nullptr;
-static HumanFaceRecognizer *face_recognizer = nullptr;
+web_cam_t *get_web_cam_instance(void) { return s_web_cam; }
 
 /**
  * @brief Web cam control structure
  */
-typedef struct web_cam_video {
-  int fd;
-  uint8_t index;
-
-  example_encoder_handle_t encoder_handle;
-  uint8_t *jpeg_out_buf;
-  uint32_t jpeg_out_size;
-
-  uint8_t *buffer[EXAMPLE_CAMERA_VIDEO_BUFFER_NUMBER];
-  uint32_t buffer_size;
-
-  uint32_t width;
-  uint32_t height;
-  uint32_t pixel_format;
-  uint8_t jpeg_quality;
-
-  uint32_t frame_rate;
-
-  SemaphoreHandle_t sem;
-
-  uint32_t support_control_jpeg_quality : 1;
-} web_cam_video_t;
-
-typedef struct web_cam {
-  uint8_t video_count;
-  web_cam_video_t video[0];
-} web_cam_t;
 
 typedef struct web_cam_video_config {
   const char *dev_name;
@@ -499,213 +468,70 @@ static esp_err_t init_spiffs(void) {
 }
 
 static esp_err_t image_stream_handler(httpd_req_t *req) {
-  esp_err_t ret;
-  struct v4l2_buffer buf;
   char http_string[128];
   web_cam_video_t *video = (web_cam_video_t *)req->user_ctx;
-  bool locked = false; // declared once, visible to fail0:
 
-  // Stream headers (sent once)
-  ESP_RETURN_ON_FALSE(snprintf(http_string, sizeof(http_string), "%" PRIu32,
-                               video->frame_rate) > 0,
-                      ESP_FAIL, TAG, "failed to format framerate buffer");
+  // Allocate a local buffer to avoid holding the mutex during HTTP transmission
+  uint8_t *local_jpeg_buf = (uint8_t *)malloc(video->jpeg_out_size);
+  if (!local_jpeg_buf)
+    return ESP_ERR_NO_MEM;
 
-  ESP_RETURN_ON_ERROR(httpd_resp_set_type(req, STREAM_CONTENT_TYPE), TAG,
-                      "failed to set content type");
-  ESP_RETURN_ON_ERROR(
-      httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*"), TAG,
-      "failed to set access control allow origin");
-  ESP_RETURN_ON_ERROR(httpd_resp_set_hdr(req, "X-Framerate", http_string), TAG,
-                      "failed to set x framerate");
+  uint32_t last_frame_count = 0;
+
+  // Send Stream Headers once
+  snprintf(http_string, sizeof(http_string), "%" PRIu32, video->frame_rate);
+  httpd_resp_set_type(req, STREAM_CONTENT_TYPE);
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  httpd_resp_set_hdr(req, "X-Framerate", http_string);
 
   while (1) {
-    int hlen;
+    uint32_t current_jpeg_size = 0;
+    char current_ai_json[256];
     struct timespec ts;
-    uint32_t jpeg_encoded_size = 0;
-    char ai_result_json[256];
-    memset(ai_result_json, 0, sizeof(ai_result_json));
 
-    locked = false; // reset every frame
+    // 1. Check for a new frame
+    if (xSemaphoreTake(video->shared_state->mutex, portMAX_DELAY) == pdTRUE) {
+      if (video->shared_state->frame_count != last_frame_count) {
+        // New frame found! Copy data locally quickly.
+        memcpy(local_jpeg_buf, video->shared_state->jpeg_buffer,
+               video->shared_state->jpeg_size);
+        current_jpeg_size = video->shared_state->jpeg_size;
+        strncpy(current_ai_json, video->shared_state->ai_result_json,
+                sizeof(current_ai_json));
+        last_frame_count = video->shared_state->frame_count;
+      }
+      xSemaphoreGive(video->shared_state->mutex);
+    }
 
-    // --- Get new frame ---
-    memset(&buf, 0, sizeof(buf));
-    buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    buf.memory = V4L2_MEMORY_MMAP;
-    ESP_RETURN_ON_ERROR(ioctl(video->fd, VIDIOC_DQBUF, &buf), TAG,
-                        "failed to receive video frame");
-
-    if (!(buf.flags & V4L2_BUF_FLAG_DONE)) {
-      ESP_RETURN_ON_ERROR(ioctl(video->fd, VIDIOC_QBUF, &buf), TAG,
-                          "failed to queue invalid frame");
+    // If no new frame, yield and try again
+    if (current_jpeg_size == 0) {
+      vTaskDelay(pdMS_TO_TICKS(10));
       continue;
     }
 
-    // ESP_LOGI(TAG, "Check 1");
-    // --- AI inference + JPEG encode (only RGB565) ---
-    if (video->pixel_format != V4L2_PIX_FMT_JPEG && hand_detector != nullptr &&
-        gesture_recognizer != nullptr) {
+    // 2. Send over HTTP (The Mutex is UNLOCKED here! AI can keep running)
+    clock_gettime(CLOCK_MONOTONIC, &ts);
 
-      dl::image::img_t img;
-      img.data = video->buffer[buf.index];
-      img.width = video->width;
-      img.height = video->height;
+    if (httpd_resp_send_chunk(req, STREAM_BOUNDARY, strlen(STREAM_BOUNDARY)) !=
+        ESP_OK)
+      break;
 
-      // Dynamically match the AI format to the V4L2 camera format
-      if (video->pixel_format == V4L2_PIX_FMT_RGB565) {
-        img.pix_type = dl::image::DL_IMAGE_PIX_TYPE_RGB565;
-      } else {
-        // Fallback to RGB888
-        img.pix_type = dl::image::DL_IMAGE_PIX_TYPE_RGB888;
-      }
+    int hlen = snprintf(http_string, sizeof(http_string), STREAM_PART,
+                        current_jpeg_size, (int)ts.tv_sec,
+                        (int)(ts.tv_nsec / 1000), current_ai_json);
 
-      auto &detect_results = hand_detector->run(img);
+    if (httpd_resp_send_chunk(req, http_string, hlen) != ESP_OK)
+      break;
+    if (httpd_resp_send_chunk(req, (char *)local_jpeg_buf, current_jpeg_size) !=
+        ESP_OK)
+      break;
 
-      if (!detect_results.empty()) {
-        // ESP_LOGI(TAG, "Hand detected! Confidence: %f",
-        //          detect_results.front().score);
-
-        auto gesture_result =
-            gesture_recognizer->recognize(img, detect_results);
-
-        const dl::cls::result_t best = gesture_result.front();
-        // ESP_LOGI(TAG, "Hand detected! Gesture ID: %s, score: %f",
-        // best.cat_name,
-        //          best.score);
-        ESP_LOGI(TAG, "Gesture recognized: %s (score=%.4f)",
-                 best.cat_name ? best.cat_name : "unknown", best.score);
-
-        auto box = detect_results.front().box;
-
-        // Use snprintf and check for overflow
-        // snprintf(ai_result_json, sizeof(ai_result_json),
-        //          "{\"detected\":true,\"x\":%d,\"y\":%d,\"w\":%d,\"h\":%d,"
-        //          "\"gesture_id\":\"%s\"}",
-        //          (int)box[0], (int)box[1], (int)(box[2] - box[0]),
-        //          (int)(box[3] - box[1]), best.cat_name);
-      } else {
-        // ESP_LOGI(TAG, "No hand detected");
-        strcpy(ai_result_json, "{\"detected\":false}");
-      }
-
-      // 1. Run Face Detection
-      auto &face_results = face_detector->run(img);
-      // ESP_LOGI(TAG, "img size: %dx%d", img.width, img.height);
-
-      if (!face_results.empty()) {
-        auto first_face = face_results.front();
-        ESP_LOGI(TAG,
-                 "Face detected! Confidence: %f| BBox: [Left: %d, Top: %d, "
-                 "Right: %d, Bottom: %d]",
-                 first_face.score, (int)first_face.box[0],
-                 (int)first_face.box[1], (int)first_face.box[2],
-                 (int)first_face.box[3]);
-
-        // 2. Run recognition
-        auto recognize_result = face_recognizer->recognize(img, face_results);
-
-        // 3. SAFELY extract the recognition result
-        if (!recognize_result.empty()) {
-          if (recognize_result.front().id != -1) {
-            // If recognize() returns a single result struct (not a vector)
-            ESP_LOGI(TAG, "Matched Face ID: %d (Similarity: %f)",
-                     recognize_result.front().id,
-                     recognize_result.front().similarity);
-          }
-        } else {
-          ESP_LOGI(TAG, "Unknown Face Detected");
-        }
-
-        // auto first_recognition = recognize_result.front();
-
-        // int face_id =
-        //     first_recognition.id; // Will be -1 if it's an unknown face
-
-        // if (face_id > 0) {
-        //   ESP_LOGI(TAG, "Matched Face ID: %d (Similarity: %f)", face_id,
-        //            first_recognition.similarity);
-        // } else {
-        //   ESP_LOGI(TAG, "Unknown Face Detected");
-        // }
-
-        // 2. Run Face Recognition
-        // This extracts facial landmarks and compares them to the database
-        // auto recognition_results =
-        //     face_recognizer->recognize(img, face_results);
-
-        // for (int i = 0; i < recognition_results.size(); ++i) {
-        //   int face_id = recognition_results[i].id; // -1 if unknown
-
-        //   if (face_id >= 0) {
-        //     ESP_LOGI(TAG, "Matched Face ID: %d", face_id);
-        //   } else {
-        //     ESP_LOGI(TAG, "Unknown Face Detected");
-        //   }
-
-        // Add to your JSON output
-        // auto &box = face_results[i].box;
-        // snprintf(ai_result_json, sizeof(ai_result_json),
-        //          "{\"type\":\"face\",\"id\":%d,\"x\":%d,\"y\":%d}",
-        //          face_id, (int)box[0], (int)box[1]);
-        // }
-      }
-
-      // Encode to JPEG
-      ESP_GOTO_ON_FALSE(xSemaphoreTake(video->sem, portMAX_DELAY) == pdPASS,
-                        ESP_FAIL, fail0, TAG, "failed to take semaphore");
-      locked = true;
-
-      ESP_GOTO_ON_ERROR(example_encoder_process(
-                            video->encoder_handle, video->buffer[buf.index],
-                            video->buffer_size, video->jpeg_out_buf,
-                            video->jpeg_out_size, &jpeg_encoded_size),
-                        fail0, TAG, "failed to encode video frame");
-    } else {
-      // Raw JPEG camera
-      video->jpeg_out_buf = video->buffer[buf.index];
-      jpeg_encoded_size = buf.bytesused;
-    }
-
-    // --- Send one proper MJPEG frame ---
-    ESP_GOTO_ON_ERROR(clock_gettime(CLOCK_MONOTONIC, &ts), fail0, TAG,
-                      "failed to get time");
-
-    // Boundary
-    ESP_GOTO_ON_ERROR(
-        httpd_resp_send_chunk(req, STREAM_BOUNDARY, strlen(STREAM_BOUNDARY)),
-        fail0, TAG, "failed to send boundary");
-
-    // Header with X-AI-Result
-    ESP_GOTO_ON_FALSE(
-        (hlen = snprintf(http_string, sizeof(http_string), STREAM_PART,
-                         jpeg_encoded_size, (int)ts.tv_sec,
-                         (int)(ts.tv_nsec / 1000), ai_result_json)) > 0,
-        ESP_FAIL, fail0, TAG, "failed to format part buffer");
-
-    ESP_GOTO_ON_ERROR(httpd_resp_send_chunk(req, http_string, hlen), fail0, TAG,
-                      "failed to send part header");
-
-    // JPEG data
-    ESP_GOTO_ON_ERROR(httpd_resp_send_chunk(req, (char *)video->jpeg_out_buf,
-                                            jpeg_encoded_size),
-                      fail0, TAG, "failed to send jpeg");
-
-    if (locked) {
-      xSemaphoreGive(video->sem);
-      locked = false;
-    }
-
-    ESP_RETURN_ON_ERROR(ioctl(video->fd, VIDIOC_QBUF, &buf), TAG,
-                        "failed to queue video frame");
+    // Add a small delay to respect framerate and not flood the network
+    vTaskDelay(pdMS_TO_TICKS(1000 / video->frame_rate));
   }
 
-  return ESP_OK;
-
-fail0:
-  if (locked) {
-    xSemaphoreGive(video->sem);
-  }
-  ioctl(video->fd, VIDIOC_QBUF, &buf);
-  return ret;
+  free(local_jpeg_buf);
+  return ESP_FAIL; // Reached if client disconnects
 }
 
 static esp_err_t capture_image_handler(httpd_req_t *req) {
@@ -1048,6 +874,10 @@ static esp_err_t start_cam_web_server(const web_cam_video_config_t *config,
 
   ESP_RETURN_ON_ERROR(new_web_cam(config, config_count, &web_cam), TAG,
                       "Failed to new web cam");
+  // s_web_cam = (web_cam_t *)calloc(
+  //     1, sizeof(web_cam_t) + config_count * sizeof(web_cam_video_t));
+  s_web_cam = web_cam;
+
   ESP_GOTO_ON_ERROR(http_server_init(web_cam), fail0, TAG,
                     "Failed to init http server");
 
@@ -1154,88 +984,10 @@ extern "C" void app_main(void) {
   assert(config_count > 0);
 
   init_spiffs();
-
-  // --- Initialize AI Model ---
-  ESP_LOGI(TAG, "Loading Hand Detection Model from Flash...");
-  hand_detector = new HandDetect();
-  hand_detector->set_score_thr(0.5);
-
-  gesture_recognizer = new HandGestureRecognizer();
-
-  if (hand_detector != nullptr && gesture_recognizer != nullptr) {
-    ESP_LOGI(TAG, "Hand Gesture Recognition Model loaded successfully!");
-  } else {
-    ESP_LOGE(TAG, "Failed to load Hand Gesture Recognition Model.");
-  }
-  // ---------------------------
-  face_detector = new HumanFaceDetect();
-  face_recognizer = new HumanFaceRecognizer("/spiffs/face.db",
-                                            HumanFaceFeat::MBF_S8_V1, false);
-
-  // Define this right before your face_recognizer initialization
-  struct PreEnrollData {
-    const uint8_t *image_data;
-    int id;
-    const char *name; // Optional: Just to make your logs easier to read
-  };
-
-  if (face_detector != nullptr && face_recognizer != nullptr) {
-    ESP_LOGI(TAG, "Face Recognition Model loaded successfully!");
-    // --- First-Boot Pre-Enrollment Logic ---
-    face_recognizer->clear_all_feats();
-    if (face_recognizer->get_num_feats() == 0) {
-      ESP_LOGI(TAG,
-               "Database is empty. Running batch offline pre-enrollment...");
-
-      // 1. Create an array of all the people you want to enroll
-      PreEnrollData users_to_enroll[] = {{user1_rgb_start, 1, "Yiu"},
-                                         {user2_rgb_start, 2, "Jerry"},
-                                         {user3_rgb_start, 3, "Thomas"}};
-
-      // Calculate how many people are in the array
-      int num_users = sizeof(users_to_enroll) / sizeof(users_to_enroll[0]);
-
-      // 2. Loop through each person and enroll them
-      for (int i = 0; i < num_users; i++) {
-        ESP_LOGI(TAG, "Attempting to enroll ID: %d (%s)...",
-                 users_to_enroll[i].id, users_to_enroll[i].name);
-
-        dl::image::img_t pre_img;
-        pre_img.data = (void *)users_to_enroll[i].image_data;
-        // pre_img.width = 1920;
-        // pre_img.height = 1080;
-        pre_img.width = 240;
-        pre_img.height = 240;
-        pre_img.pix_type = dl::image::DL_IMAGE_PIX_TYPE_RGB888;
-
-        auto &pre_face_results = face_detector->run(pre_img);
-
-        if (!pre_face_results.empty()) {
-          // Enroll and save to SPIFFS
-          face_recognizer->enroll(pre_img, pre_face_results);
-          ESP_LOGI(TAG, "SUCCESS! Enrolled %s as ID %d.",
-                   users_to_enroll[i].name, users_to_enroll[i].id);
-        } else {
-          ESP_LOGE(TAG, "FAILED: No face detected in image for %s.",
-                   users_to_enroll[i].name);
-        }
-      }
-
-      ESP_LOGI(TAG, "Batch pre-enrollment complete. Total faces in DB: %d",
-               face_recognizer->get_num_feats());
-    } else {
-      ESP_LOGI(TAG,
-               "Database already contains %d faces. Skipping batch "
-               "pre-enrollment.",
-               face_recognizer->get_num_feats());
-    }
-    // ---------------------------------------
-  } else {
-    ESP_LOGE(TAG, "Failed to load Face Recognition Model.");
-  }
-
+  init_ai_models();
   // ---------------------------
   ESP_ERROR_CHECK(start_cam_web_server(config, config_count));
-
-  ESP_LOGI(TAG, "Camera web server starts");
+  if (s_web_cam != nullptr) {
+    start_ai_processing_task(&s_web_cam->video[0]);
+  }
 }
