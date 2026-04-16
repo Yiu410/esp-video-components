@@ -93,6 +93,8 @@ esp_err_t init_ai_models() {
       auto &pre_face_results = face_detector->run(pre_img);
       if (!pre_face_results.empty()) {
         face_recognizer->enroll(pre_img, pre_face_results);
+        ESP_LOGI(TAG, "Enrolled user: %s with ID: %d", users_to_enroll[i].name,
+                 users_to_enroll[i].id);
       }
     }
   }
