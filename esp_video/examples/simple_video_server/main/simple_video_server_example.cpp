@@ -984,6 +984,7 @@ extern "C" void app_main(void) {
   assert(config_count > 0);
 
   init_spiffs();
+  init_udp();
   init_ai_models();
   // ---------------------------
   ESP_ERROR_CHECK(start_cam_web_server(config, config_count));

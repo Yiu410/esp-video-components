@@ -1,7 +1,11 @@
 // ai_processor.cpp
 #include "ai_processor.hpp"
+#include "cJSON.h"
 #include "esp_log.h"
 #include "freertos/task.h"
+#include "lwip/inet.h"
+#include "lwip/sockets.h"
+#include "sys/errno.h"
 #include <string.h>
 #include <sys/ioctl.h>
 
@@ -23,6 +27,38 @@ static HandDetect *hand_detector = nullptr;
 static HandGestureRecognizer *gesture_recognizer = nullptr;
 static HumanFaceDetect *face_detector = nullptr;
 static HumanFaceRecognizer *face_recognizer = nullptr;
+
+// UDP define
+#define JETSON_IP "10.42.0.1" // Replace with Orin's IP if different
+#define UDP_PORT 5000
+
+int udp_sock = -1;
+struct sockaddr_in dest_addr;
+
+void init_udp() {
+  dest_addr.sin_addr.s_addr = inet_addr(JETSON_IP);
+  dest_addr.sin_family = AF_INET;
+  dest_addr.sin_port = htons(UDP_PORT);
+
+  udp_sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
+  if (udp_sock < 0) {
+    ESP_LOGE(TAG, "Unable to create UDP socket");
+  } else {
+    ESP_LOGI(TAG, "UDP Ready! Aimed at Jetson Brain: %s:%d", JETSON_IP,
+             UDP_PORT);
+  }
+}
+
+// 2. Fire and forget the JSON string
+void send_udp_json(const char *json_str) {
+  if (udp_sock != -1 && strlen(json_str) > 0) {
+    int err = sendto(udp_sock, json_str, strlen(json_str), 0,
+                     (struct sockaddr *)&dest_addr, sizeof(dest_addr));
+    if (err < 0) {
+      ESP_LOGE(TAG, "Error occurred during sending: errno %d", errno);
+    }
+  }
+}
 
 struct PreEnrollData {
   const uint8_t *image_data;
@@ -83,6 +119,8 @@ static void ai_processing_task(void *arg) {
     uint32_t jpeg_encoded_size = 0;
     memset(local_ai_json, 0, sizeof(local_ai_json));
 
+    cJSON *root = cJSON_CreateObject();
+
     // 2. Run AI Inference
     if (video->pixel_format != V4L2_PIX_FMT_JPEG) {
       dl::image::img_t img;
@@ -94,16 +132,23 @@ static void ai_processing_task(void *arg) {
                          : dl::image::DL_IMAGE_PIX_TYPE_RGB888;
 
       // Hand Detection
+
       auto &detect_results = hand_detector->run(img);
       if (!detect_results.empty()) {
         auto gesture_result =
             gesture_recognizer->recognize(img, detect_results);
-        const dl::cls::result_t best = gesture_result.front();
+        const dl::cls::result_t best_gesture = gesture_result.front();
         snprintf(local_ai_json, sizeof(local_ai_json),
-                 "{\"detected\":true,\"gesture\":\"%s\"}", best.cat_name);
+                 "{\"detected\":true,\"gesture\":\"%s\"}",
+                 best_gesture.cat_name);
+
+        // cJSON_AddStringToObject(root, "type", "gesture");
+        cJSON_AddStringToObject(root, "gesture_name", best_gesture.cat_name);
+        cJSON_AddNumberToObject(root, "gesture_confidence", best_gesture.score);
 
         ESP_LOGI(TAG, "Gesture recognized: %s (score=%.4f)",
-                 best.cat_name ? best.cat_name : "unknown", best.score);
+                 best_gesture.cat_name ? best_gesture.cat_name : "unknown",
+                 best_gesture.score);
       } else {
         strcpy(local_ai_json, "{\"detected\":false}");
       }
@@ -121,11 +166,22 @@ static void ai_processing_task(void *arg) {
             ESP_LOGI(TAG, "Matched Face ID: %d (Similarity:%f)",
                      recognize_results.front().id,
                      recognize_results.front().similarity);
+            // cJSON_AddStringToObject(root, "type", "face");
+            cJSON_AddNumberToObject(root, "face_id",
+                                    recognize_results.front().id);
+            cJSON_AddNumberToObject(root, "face_similarity",
+                                    recognize_results.front().similarity);
           }
         } else {
           ESP_LOGI(TAG, "Unknown Face Detected");
         }
       }
+
+      char *local_ai_json = cJSON_PrintUnformatted(root);
+      // BLAST IT OVER WI-FI TO THE ORIN
+      send_udp_json(local_ai_json);
+      // Clean up memory to prevent a leak
+      cJSON_Delete(root);
 
       // 3. Encode to JPEG
       example_encoder_process(video->encoder_handle, video->buffer[buf.index],
