@@ -21,6 +21,7 @@ static const char *TAG = "AI_TASK";
 extern const uint8_t user1_rgb_start[] asm("_binary_yiu_rgb_start");
 extern const uint8_t user2_rgb_start[] asm("_binary_jerry_rgb_start");
 extern const uint8_t user3_rgb_start[] asm("_binary_thomas_rgb_start");
+extern const uint8_t user4_rgb_start[] asm("_binary_theo_rgb_start");
 
 // AI Models
 static HandDetect *hand_detector = nullptr;
@@ -73,6 +74,7 @@ esp_err_t init_ai_models() {
   gesture_recognizer = new HandGestureRecognizer();
 
   face_detector = new HumanFaceDetect();
+  face_detector->set_score_thr(0.3);
   face_recognizer = new HumanFaceRecognizer("/spiffs/face.db",
                                             HumanFaceFeat::MBF_S8_V1, false);
 
@@ -80,9 +82,12 @@ esp_err_t init_ai_models() {
   face_recognizer->clear_all_feats();
   if (face_recognizer->get_num_feats() == 0) {
     ESP_LOGI(TAG, "Running batch offline pre-enrollment...");
-    PreEnrollData users_to_enroll[] = {{user1_rgb_start, 1, "Yiu"},
-                                       {user2_rgb_start, 2, "Jerry"},
-                                       {user3_rgb_start, 3, "Thomas"}};
+    PreEnrollData users_to_enroll[] = {
+        {user1_rgb_start, 1, "Yiu"},
+        {user2_rgb_start, 2, "Jerry"},
+        {user3_rgb_start, 3, "Thomas"},
+        {user4_rgb_start, 4, "Theo"},
+    };
     int num_users = sizeof(users_to_enroll) / sizeof(users_to_enroll[0]);
     for (int i = 0; i < num_users; i++) {
       dl::image::img_t pre_img;
@@ -105,8 +110,6 @@ esp_err_t init_ai_models() {
   return ESP_OK;
 }
 
-#define ONE 1
-
 static void ai_processing_task(void *arg) {
   web_cam_video_t *video = (web_cam_video_t *)arg;
   struct v4l2_buffer buf;
@@ -128,8 +131,6 @@ static void ai_processing_task(void *arg) {
     memset(local_ai_json, 0, sizeof(local_ai_json));
 
     cJSON *root = cJSON_CreateObject();
-
-    // cJSON_AddStringToObject(root, "ai", "results");
 
     // 2. Run AI Inference
     if (video->pixel_format != V4L2_PIX_FMT_JPEG) {

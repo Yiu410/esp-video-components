@@ -21,3 +21,4 @@ target_add_binary_data(${COMPONENT_LIB} "models/human_face_feat_mbf_s8_v1.espdl"
 target_add_binary_data(${COMPONENT_TARGET} "face_db/jerry.rgb" TEXT)
 target_add_binary_data(${COMPONENT_TARGET} "face_db/thomas.rgb" TEXT)
 target_add_binary_data(${COMPONENT_TARGET} "face_db/yiu.rgb" TEXT)
+target_add_binary_data(${COMPONENT_TARGET} "face_db/theo.rgb" TEXT)
