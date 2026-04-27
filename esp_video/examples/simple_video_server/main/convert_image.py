@@ -59,4 +59,4 @@ def verify_rgb_tensor(rgb_file_path):
 
 # Test the file you just generated
 verify_rgb_tensor(
-    r"C:\Users\chuny\OneDrive - HKUST Connect\Desktop\fyp\face\main\camera_0_image.rgb")
+    r"C:\Users\chuny\OneDrive - HKUST Connect\Desktop\fyp\face\main\yiu.rgb")

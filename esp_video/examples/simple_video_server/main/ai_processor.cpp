@@ -77,6 +77,7 @@ esp_err_t init_ai_models() {
                                             HumanFaceFeat::MBF_S8_V1, false);
 
   // Pre-enrollment logic (moved exactly from your app_main)
+  face_recognizer->clear_all_feats();
   if (face_recognizer->get_num_feats() == 0) {
     ESP_LOGI(TAG, "Running batch offline pre-enrollment...");
     PreEnrollData users_to_enroll[] = {{user1_rgb_start, 1, "Yiu"},
@@ -95,11 +96,16 @@ esp_err_t init_ai_models() {
         face_recognizer->enroll(pre_img, pre_face_results);
         ESP_LOGI(TAG, "Enrolled user: %s with ID: %d", users_to_enroll[i].name,
                  users_to_enroll[i].id);
+      } else {
+        ESP_LOGE(TAG, "No face detected during pre-enrollment for user: %s",
+                 users_to_enroll[i].name);
       }
     }
   }
   return ESP_OK;
 }
+
+#define ONE 1
 
 static void ai_processing_task(void *arg) {
   web_cam_video_t *video = (web_cam_video_t *)arg;
@@ -122,6 +128,8 @@ static void ai_processing_task(void *arg) {
     memset(local_ai_json, 0, sizeof(local_ai_json));
 
     cJSON *root = cJSON_CreateObject();
+
+    // cJSON_AddStringToObject(root, "ai", "results");
 
     // 2. Run AI Inference
     if (video->pixel_format != V4L2_PIX_FMT_JPEG) {
@@ -164,24 +172,36 @@ static void ai_processing_task(void *arg) {
         if (!recognize_results.empty()) {
           if (recognize_results.front().id !=
               -1) { // If recognize() returns a single result struct (not a
-                    // vector)
-            ESP_LOGI(TAG, "Matched Face ID: %d (Similarity:%f)",
+            // vector)
+            auto face_bbox = face_results.front().box;
+            auto face_center_x = (face_bbox[0] + face_bbox[2]) / 2;
+            auto face_center_y = (face_bbox[1] + face_bbox[3]) / 2;
+            ESP_LOGI(TAG, "Matched Face ID: %d (Similarity:%f), coord[%d,%d]",
                      recognize_results.front().id,
-                     recognize_results.front().similarity);
+                     recognize_results.front().similarity, face_center_x,
+                     face_center_y);
             // cJSON_AddStringToObject(root, "type", "face");
             cJSON_AddNumberToObject(root, "face_id",
                                     recognize_results.front().id);
             cJSON_AddNumberToObject(root, "face_similarity",
                                     recognize_results.front().similarity);
+            cJSON_AddNumberToObject(root, "face_center_x", face_center_x);
+            cJSON_AddNumberToObject(root, "face_center_y", face_center_y);
           }
         } else {
           ESP_LOGI(TAG, "Unknown Face Detected");
         }
       }
 
-      char *local_ai_json = cJSON_PrintUnformatted(root);
-      // BLAST IT OVER WI-FI TO THE ORIN
-      send_udp_json(local_ai_json);
+      char *printed_json = cJSON_PrintUnformatted(root);
+      if (printed_json) {
+        // BLAST IT OVER WI-FI TO THE ORIN
+        send_udp_json(printed_json);
+        strncpy(local_ai_json, printed_json, sizeof(local_ai_json) - 1);
+        local_ai_json[sizeof(local_ai_json) - 1] = '\0';
+        free(printed_json);
+      }
+
       // Clean up memory to prevent a leak
       cJSON_Delete(root);
 
