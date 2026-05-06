@@ -30,7 +30,8 @@ static HumanFaceDetect *face_detector = nullptr;
 static HumanFaceRecognizer *face_recognizer = nullptr;
 
 // UDP define
-#define JETSON_IP "10.42.0.1" // Replace with Orin's IP if different
+// #define JETSON_IP "10.42.0.1" // Replace with Orin's IP if different
+#define JETSON_IP "192.168.0.139" // Replace with Orin's IP if different
 #define UDP_PORT 5000
 
 int udp_sock = -1;
@@ -59,6 +60,21 @@ void send_udp_json(const char *json_str) {
       ESP_LOGE(TAG, "Error occurred during sending: errno %d", errno);
     }
   }
+}
+
+void test_udp() {
+  cJSON *root = cJSON_CreateObject();
+  cJSON_AddNumberToObject(root, "device", 4098);
+  char *printed_json = cJSON_PrintUnformatted(root);
+  if (printed_json) {
+    // BLAST IT OVER WI-FI TO THE ORIN
+    send_udp_json(printed_json);
+    free(printed_json);
+    ESP_LOGI(TAG, "UDP sending:%d", JETSON_IP);
+  }
+
+  // Clean up memory to prevent a leak
+  cJSON_Delete(root);
 }
 
 struct PreEnrollData {

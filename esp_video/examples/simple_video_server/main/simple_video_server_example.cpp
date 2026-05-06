@@ -931,7 +931,7 @@ extern "C" void app_main(void) {
   /*For camera devices that require the host to provide XCLK, the video_init()
   must be called immediately after the device is restarted, otherwise the
   camera device may not be able to start due to the lack of the main clock.*/
-  ESP_ERROR_CHECK(example_video_init());
+  // ESP_ERROR_CHECK(example_video_init());
 
   ESP_ERROR_CHECK(esp_netif_init());
   ESP_ERROR_CHECK(esp_event_loop_create_default());
@@ -987,8 +987,11 @@ extern "C" void app_main(void) {
   init_udp();
   init_ai_models();
   // ---------------------------
-  ESP_ERROR_CHECK(start_cam_web_server(config, config_count));
-  if (s_web_cam != nullptr) {
-    start_ai_processing_task(&s_web_cam->video[0]);
+  // ESP_ERROR_CHECK(start_cam_web_server(config, config_count));
+  // if (s_web_cam != nullptr) {
+  //   start_ai_processing_task(&s_web_cam->video[0]);
+  // }
+  while (1) {
+    test_udp();
   }
 }
