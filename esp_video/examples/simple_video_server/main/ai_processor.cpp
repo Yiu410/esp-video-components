@@ -57,7 +57,12 @@ void send_udp_json(const char *json_str) {
     int err = sendto(udp_sock, json_str, strlen(json_str), 0,
                      (struct sockaddr *)&dest_addr, sizeof(dest_addr));
     if (err < 0) {
-      ESP_LOGE(TAG, "Error occurred during sending: errno %d", errno);
+      if (errno == ENOMEM) {
+        // LwIP returns ENOMEM if out of TX buffers.
+        // We can safely drop this UDP packet to avoid spamming the log.
+      } else {
+        ESP_LOGE(TAG, "Error occurred during sending: errno %d", errno);
+      }
     }
   }
 }
@@ -170,12 +175,16 @@ static void ai_processing_task(void *arg) {
                  best_gesture.cat_name);
 
         // cJSON_AddStringToObject(root, "type", "gesture");
-        cJSON_AddStringToObject(root, "gesture_name", best_gesture.cat_name);
-        cJSON_AddNumberToObject(root, "gesture_confidence", best_gesture.score);
+        if (strcmp(best_gesture.cat_name, "no_hand") != 0 &&
+            strcmp(best_gesture.cat_name, "no_gesture") != 0) {
+          cJSON_AddStringToObject(root, "gesture_name", best_gesture.cat_name);
+          cJSON_AddNumberToObject(root, "gesture_confidence",
+                                  best_gesture.score);
+          ESP_LOGI(TAG, "Gesture recognized: %s (score=%.4f)",
+                   best_gesture.cat_name ? best_gesture.cat_name : "unknown",
+                   best_gesture.score);
+        }
 
-        ESP_LOGI(TAG, "Gesture recognized: %s (score=%.4f)",
-                 best_gesture.cat_name ? best_gesture.cat_name : "unknown",
-                 best_gesture.score);
       } else {
         strcpy(local_ai_json, "{\"detected\":false}");
       }
@@ -183,31 +192,39 @@ static void ai_processing_task(void *arg) {
       // Face Detection (truncated for brevity, insert your face logic here)
       auto &face_results = face_detector->run(img);
       if (!face_results.empty()) {
-        auto recognize_results = face_recognizer->recognize(img, face_results);
-        // Extract logic...
+        cJSON *faces_array = cJSON_CreateArray();
 
-        if (!recognize_results.empty()) {
-          if (recognize_results.front().id !=
-              -1) { // If recognize() returns a single result struct (not a
-            // vector)
-            auto face_bbox = face_results.front().box;
-            auto face_center_x = (face_bbox[0] + face_bbox[2]) / 2;
-            auto face_center_y = (face_bbox[1] + face_bbox[3]) / 2;
-            ESP_LOGI(TAG, "Matched Face ID: %d (Similarity:%f), coord[%d,%d]",
-                     recognize_results.front().id,
-                     recognize_results.front().similarity, face_center_x,
-                     face_center_y);
-            // cJSON_AddStringToObject(root, "type", "face");
-            cJSON_AddNumberToObject(root, "face_id",
+        for (const auto &face : face_results) {
+          std::list<dl::detect::result_t> single_face_list;
+          single_face_list.push_back(face);
+
+          auto recognize_results =
+              face_recognizer->recognize(img, single_face_list);
+
+          cJSON *face_obj = cJSON_CreateObject();
+          auto face_bbox = face.box;
+          auto face_center_x = (face_bbox[0] + face_bbox[2]) / 2;
+
+          cJSON_AddNumberToObject(face_obj, "face_center_x", face_center_x);
+
+          if (!recognize_results.empty() &&
+              recognize_results.front().id != -1) {
+            cJSON_AddNumberToObject(face_obj, "face_id",
                                     recognize_results.front().id);
-            cJSON_AddNumberToObject(root, "face_similarity",
+            cJSON_AddNumberToObject(face_obj, "face_similarity",
                                     recognize_results.front().similarity);
-            cJSON_AddNumberToObject(root, "face_center_x", face_center_x);
-            cJSON_AddNumberToObject(root, "face_center_y", face_center_y);
+            ESP_LOGI(TAG, "Matched Face ID: %d (Similarity:%f), coord[%d]",
+                     recognize_results.front().id,
+                     recognize_results.front().similarity, face_center_x);
+          } else {
+            cJSON_AddNumberToObject(face_obj, "face_id", -1);
+            ESP_LOGI(TAG, "Unknown Face Detected, coord[%d]", face_center_x);
           }
-        } else {
-          ESP_LOGI(TAG, "Unknown Face Detected");
+
+          cJSON_AddItemToArray(faces_array, face_obj);
         }
+
+        cJSON_AddItemToObject(root, "faces", faces_array);
       }
 
       char *printed_json = cJSON_PrintUnformatted(root);
